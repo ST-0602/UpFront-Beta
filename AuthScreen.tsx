@@ -157,6 +157,26 @@ export function AuthScreen() {
                 {loading ? <ActivityIndicator color="#000" /> : <Text style={styles.btnText}>{isLogin ? 'Sign In' : 'Create Account'}</Text>}
               </TouchableOpacity>
 
+              {/* --- 👇 PASTE THIS STARTING HERE 👇 --- */}
+              
+              <TouchableOpacity 
+                style={[styles.btn, { backgroundColor: '#222', marginTop: 10, borderColor: '#333', borderWidth: 1 }]} 
+                onPress={async () => {
+                  setLoading(true);
+                  // ⚠️ REPLACE WITH THE EMAIL/PASSWORD YOU JUST CREATED
+                  const { error } = await supabase.auth.signInWithPassword({ 
+                    email: "sakshamt@rocketmail.com", 
+                    password: "Gumtree@101" 
+                  });
+                  if (error) Alert.alert("Dev Login Failed", error.message);
+                  setLoading(false);
+                }}
+              >
+                <Text style={[styles.btnText, { color: '#888' }]}>⚡️ DEV QUICK LOGIN</Text>
+              </TouchableOpacity>
+
+              {/* --- 👆 END OF PASTE 👆 --- */}
+
               <View style={styles.socialRow}>
                 <TouchableOpacity style={styles.socialBtn} onPress={handleGooglePress}>
                   <FontAwesome name="google" size={24} color="#fff" />

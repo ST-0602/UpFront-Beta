@@ -1,99 +1,106 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, Alert } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, Alert, SafeAreaView } from 'react-native';
 import { AuthProvider, useAuth } from './contexts/AuthProvider';
 import { AuthScreen } from './AuthScreen';
 import { supabase } from './lib/supabase';
 import * as LocalAuthentication from 'expo-local-authentication';
 import { Ionicons } from '@expo/vector-icons';
 
-// --- Home Screen ---
-const HomeScreen = () => (
-  <View style={styles.container}>
-    <Text style={styles.text}>Welcome Home</Text>
-    <TouchableOpacity onPress={() => supabase.auth.signOut()} style={styles.btn}>
-      <Text style={styles.btnText}>Sign Out</Text>
-    </TouchableOpacity>
-  </View>
-);
+// --- THE NEW DASHBOARD (Home Screen) ---
+const HomeScreen = () => {
+  const [biometricType, setBiometricType] = useState<string>('None');
+  const [isBiometricEnabled, setIsBiometricEnabled] = useState(false);
 
-// --- Biometric Lock Screen ---
-const BiometricGate = ({ onUnlock }: { onUnlock: () => void }) => {
-  const [status, setStatus] = useState('Scanning...');
-
-  async function authenticate() {
-    try {
-      // 1. Check for Hardware
-      const hasHardware = await LocalAuthentication.hasHardwareAsync();
-      const isEnrolled = await LocalAuthentication.isEnrolledAsync();
-
-      if (!hasHardware || !isEnrolled) {
-        // If they physically can't use FaceID, just let them in (or force them to set it up)
-        onUnlock(); 
-        return;
-      }
-
-      // 2. Authenticate (Force FaceID, NO Passcode fallback)
-      const result = await LocalAuthentication.authenticateAsync({
-        promptMessage: 'Unlock UpFront',
-        fallbackLabel: '', // Hides fallback button on some iOS
-        disableDeviceFallback: true, // ⚠️ STOPS the passcode prompt!
-        cancelLabel: 'Log Out'
-      });
-
-      if (result.success) {
-        onUnlock();
-      } else {
-        setStatus('Authentication Failed');
-        Alert.alert("Locked", "FaceID failed.", [
-          { text: "Try Again", onPress: authenticate },
-          { text: "Log Out", onPress: () => supabase.auth.signOut(), style: "destructive" }
-        ]);
-      }
-    } catch (e) {
-      // If something crashes, just let them in so they aren't locked out of their money
-      onUnlock();
-    }
-  }
-
+  // 1. Quietly check what hardware the phone has
   useEffect(() => {
-    // Wait 500ms before scanning to let the view load smoothly
-    setTimeout(() => authenticate(), 500);
+    (async () => {
+      const types = await LocalAuthentication.supportedAuthenticationTypesAsync();
+      if (types.includes(LocalAuthentication.AuthenticationType.FACIAL_RECOGNITION)) {
+        setBiometricType('FaceID');
+      } else if (types.includes(LocalAuthentication.AuthenticationType.FINGERPRINT)) {
+        setBiometricType('TouchID');
+      }
+    })();
   }, []);
 
+  // 2. The function to test/enable security
+  const toggleSecurity = async () => {
+    if (isBiometricEnabled) {
+      setIsBiometricEnabled(false); // Turn it off easily
+      return;
+    }
+
+    // Try to scan
+    const result = await LocalAuthentication.authenticateAsync({
+      promptMessage: `Confirm with ${biometricType}`,
+      fallbackLabel: '', // Hide password fallback
+      disableDeviceFallback: true, // Force biometric only
+    });
+
+    if (result.success) {
+      setIsBiometricEnabled(true);
+      Alert.alert("Success", `${biometricType} is now enabled for future logins.`);
+    } else {
+      Alert.alert("Failed", "Could not verify identity.");
+    }
+  };
+
   return (
-    <View style={styles.container}>
-      <Ionicons name="finger-print" size={80} color="#3b82f6" />
-      <Text style={[styles.text, { marginTop: 20 }]}>Locked</Text>
-      
-      <TouchableOpacity onPress={authenticate} style={{ marginTop: 20 }}>
-        <Text style={{ color: '#3b82f6', fontSize: 18 }}>{status}</Text>
-      </TouchableOpacity>
-      
-      <TouchableOpacity onPress={() => supabase.auth.signOut()} style={{ marginTop: 50 }}>
-        <Text style={{ color: '#666' }}>Log Out</Text>
-      </TouchableOpacity>
-    </View>
+    <SafeAreaView style={styles.container}>
+      <View style={styles.content}>
+        
+        {/* Header */}
+        <View style={styles.header}>
+            <View>
+                <Text style={styles.greeting}>Good afternoon,</Text>
+                <Text style={styles.username}>Saksham</Text>
+            </View>
+            <TouchableOpacity onPress={() => supabase.auth.signOut()} style={styles.smallBtn}>
+                <Ionicons name="log-out-outline" size={24} color="#666" />
+            </TouchableOpacity>
+        </View>
+
+        {/* Balance Card (Placeholder) */}
+        <View style={styles.card}>
+            <Text style={styles.cardLabel}>Total Balance</Text>
+            <Text style={styles.balance}>£0.00</Text>
+        </View>
+
+        {/* Security Settings Section */}
+        <Text style={styles.sectionTitle}>Settings</Text>
+        
+        <TouchableOpacity style={styles.settingRow} onPress={toggleSecurity}>
+            <View style={styles.rowLeft}>
+                <Ionicons 
+                    name={biometricType === 'FaceID' ? "scan-outline" : "finger-print-outline"} 
+                    size={24} 
+                    color="#3b82f6" 
+                />
+                <Text style={styles.settingText}>
+                    Enable {biometricType === 'None' ? 'Biometrics' : biometricType}
+                </Text>
+            </View>
+            {/* Simple Toggle Indicator */}
+            <View style={[styles.toggle, isBiometricEnabled && styles.toggleActive]}>
+                <View style={[styles.toggleKnob, isBiometricEnabled && styles.toggleKnobActive]} />
+            </View>
+        </TouchableOpacity>
+
+      </View>
+    </SafeAreaView>
   );
 };
 
-// --- Main Navigation ---
+// --- NAVIGATION WRAPPER ---
 const Navigation = () => {
   const { session, loading } = useAuth();
-  const [isUnlocked, setIsUnlocked] = useState(false);
 
-  useEffect(() => {
-    if (!session) setIsUnlocked(false);
-  }, [session]);
+  if (loading) return <View style={styles.centered}><ActivityIndicator color="#3b82f6"/></View>;
 
-  if (loading) return <View style={styles.container}><ActivityIndicator color="#fff"/></View>;
-
-  // 1. Not Logged In? -> Auth Screen
+  // If not logged in -> Auth Screen
   if (!session) return <AuthScreen />;
 
-  // 2. Logged In, but Locked? -> Biometric Gate
-  if (!isUnlocked) return <BiometricGate onUnlock={() => setIsUnlocked(true)} />;
-
-  // 3. Unlocked? -> Home
+  // If logged in -> Go straight to Home (No blocking gate for now!)
   return <HomeScreen />;
 };
 
@@ -106,8 +113,26 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' },
-  text: { color: '#fff', fontSize: 24, fontWeight: 'bold' },
-  btn: { marginTop: 20, padding: 15, backgroundColor: '#333', borderRadius: 8 },
-  btnText: { color: '#fff' }
+  container: { flex: 1, backgroundColor: '#000' },
+  centered: { flex: 1, backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' },
+  content: { padding: 24, paddingTop: 40 },
+  
+  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 30 },
+  greeting: { color: '#888', fontSize: 16 },
+  username: { color: '#fff', fontSize: 28, fontWeight: 'bold' },
+  smallBtn: { padding: 8, backgroundColor: '#111', borderRadius: 20 },
+
+  card: { backgroundColor: '#111', padding: 24, borderRadius: 24, marginBottom: 40, borderWidth: 1, borderColor: '#222' },
+  cardLabel: { color: '#666', fontSize: 14, textTransform: 'uppercase', letterSpacing: 1 },
+  balance: { color: '#fff', fontSize: 42, fontWeight: '900', marginTop: 8 },
+
+  sectionTitle: { color: '#fff', fontSize: 18, fontWeight: 'bold', marginBottom: 16 },
+  settingRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 16, backgroundColor: '#111', borderRadius: 16, borderWidth: 1, borderColor: '#222' },
+  rowLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  settingText: { color: '#fff', fontSize: 16, fontWeight: '500' },
+
+  toggle: { width: 50, height: 28, backgroundColor: '#333', borderRadius: 14, padding: 2 },
+  toggleActive: { backgroundColor: '#3b82f6' },
+  toggleKnob: { width: 24, height: 24, backgroundColor: '#fff', borderRadius: 12 },
+  toggleKnobActive: { alignSelf: 'flex-end' }
 });
