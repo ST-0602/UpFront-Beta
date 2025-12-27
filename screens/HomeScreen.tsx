@@ -3,8 +3,8 @@ import {
   View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, 
   FlatList, Alert, Modal, TextInput, 
   KeyboardAvoidingView, Platform, Keyboard, TouchableWithoutFeedback 
-} from 'react-native'; // <--- ⚠️ REMOVED SafeAreaView FROM HERE
-import { SafeAreaView } from 'react-native-safe-area-context'; // <--- ✅ ADDED HERE
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { supabase } from '../lib/supabase'; 
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useFocusEffect } from '@react-navigation/native'; 
@@ -21,6 +21,7 @@ export default function HomeScreen() {
   const navigation = useNavigation<any>(); 
   const [pots, setPots] = useState<Pot[]>([]);
   const [loading, setLoading] = useState(true);
+  const [userName, setUserName] = useState('Friend'); // <--- Default placeholder
   
   // Modals
   const [createModalVisible, setCreateModalVisible] = useState(false);
@@ -32,25 +33,48 @@ export default function HomeScreen() {
   const [joinCode, setJoinCode] = useState('');
   const [processing, setProcessing] = useState(false);
 
-  // 1. Fetch Pots 
-  const fetchPots = async () => {
-    const { data, error } = await supabase
-      .from('pots')
-      .select('*')
-      .order('created_at', { ascending: false });
+  // 1. Fetch User Profile & Joined Pots
+  const fetchData = async () => {
+    // A. Get Current User
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
 
-    if (error) Alert.alert('Error', error.message);
-    else setPots(data || []);
+    // B. Get Real Name
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('full_name')
+      .eq('id', user.id)
+      .single();
+    if (profile?.full_name) setUserName(profile.full_name.split(' ')[0]);
+
+    // C. Get ONLY Joined Pots
+    // We query pot_members and "expand" the pots data
+    const { data: memberData, error } = await supabase
+      .from('pot_members')
+      .select('pot_id, pots ( * )')
+      .eq('user_id', user.id);
+
+    if (error) {
+      console.log('Error fetching pots:', error);
+    } else {
+      // Map the nested data back to a flat structure
+      const formattedPots = memberData
+        .map((row: any) => row.pots)
+        .filter((pot: any) => pot !== null) // Filter out deleted pots
+        .sort((a: any, b: any) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      
+      setPots(formattedPots);
+    }
     setLoading(false);
   };
 
   useFocusEffect(
     useCallback(() => {
-      fetchPots();
+      fetchData();
     }, [])
   );
 
-  // 2. Helper: Generate a random 6-char code
+  // 2. Helper: Generate Code
   const generateCode = () => {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
     let result = '';
@@ -103,12 +127,12 @@ export default function HomeScreen() {
       setNewPotName('');
       setNewPotTarget('');
       setCreateModalVisible(false);
-      fetchPots();
+      fetchData();
     }
     setProcessing(false);
   }
 
-  // 4. Join Pot Logic
+  // 4. Join Pot Logic (FIXED)
   async function joinPot() {
     if (!joinCode || joinCode.length < 6) {
       Alert.alert("Invalid Code", "Please enter a 6-character code.");
@@ -117,18 +141,17 @@ export default function HomeScreen() {
     setProcessing(true);
     const { data: { user } } = await supabase.auth.getUser();
     
-    // A. Find the Pot
-    const { data: pot, error: findError } = await supabase
-      .from('pots')
-      .select('id, name')
-      .eq('share_code', joinCode.toUpperCase())
-      .single();
+    // A. Use Secure RPC to find pot (Bypasses the "Member Only" view policy)
+    const { data: potsFound, error: findError } = await supabase
+      .rpc('get_pot_by_code', { code_input: joinCode.toUpperCase() });
 
-    if (findError || !pot) {
+    if (findError || !potsFound || potsFound.length === 0) {
       Alert.alert("Not Found", "No pot found with that code.");
       setProcessing(false);
       return;
     }
+
+    const pot = potsFound[0];
 
     // B. Check if already a member
     const { data: existing } = await supabase
@@ -155,7 +178,7 @@ export default function HomeScreen() {
       Alert.alert("Success", `You joined ${pot.name}!`);
       setJoinCode('');
       setJoinModalVisible(false);
-      fetchPots();
+      fetchData();
     }
     setProcessing(false);
   }
@@ -167,7 +190,7 @@ export default function HomeScreen() {
       { text: "Delete", style: "destructive", onPress: async () => {
           const { error } = await supabase.from('pots').delete().eq('id', id);
           if (error) Alert.alert("Error", error.message);
-          else fetchPots();
+          else fetchData();
       }}
     ]);
   }
@@ -195,7 +218,11 @@ export default function HomeScreen() {
       <View style={styles.content}>
         {/* Header */}
         <View style={styles.header}>
-            <View><Text style={styles.greeting}>Good afternoon,</Text><Text style={styles.username}>Saksham</Text></View>
+            <View>
+              <Text style={styles.greeting}>Good afternoon,</Text>
+              {/* REAL NAME NOW */}
+              <Text style={styles.username}>{userName}</Text>
+            </View>
             <TouchableOpacity onPress={() => supabase.auth.signOut()} style={styles.smallBtn}>
                 <Ionicons name="log-out-outline" size={24} color="#666" />
             </TouchableOpacity>
@@ -220,7 +247,7 @@ export default function HomeScreen() {
                 renderItem={renderPot} 
                 keyExtractor={(item) => item.id} 
                 contentContainerStyle={{ gap: 12 }} 
-                ListEmptyComponent={<Text style={{color:'#666', textAlign:'center', marginTop:20}}>No pots yet.</Text>}
+                ListEmptyComponent={<Text style={{color:'#666', textAlign:'center', marginTop:20}}>No pots found.</Text>}
             />
         )}
 
@@ -290,7 +317,6 @@ const styles = StyleSheet.create({
   potSubtitle: { color: '#666', fontSize: 13 },
   potAmount: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
   
-  // Modals
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'center', padding: 20 },
   modalContent: { backgroundColor: '#111', padding: 24, borderRadius: 24, borderWidth: 1, borderColor: '#333' },
   modalTitle: { color: '#fff', fontSize: 22, fontWeight: 'bold', marginBottom: 10, textAlign: 'center' },
