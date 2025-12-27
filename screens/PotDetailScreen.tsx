@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { 
   View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, 
   FlatList, Alert, Share, Modal, TextInput, KeyboardAvoidingView, 
-  Platform, TouchableWithoutFeedback, Keyboard, ScrollView 
+  Platform, TouchableWithoutFeedback, Keyboard, ScrollView, Image 
 } from 'react-native';
 import { useRoute, useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
@@ -13,7 +13,7 @@ type Member = {
   id: string; 
   user_id: string; 
   role: string;
-  profiles: { full_name: string } | null; 
+  profiles: { full_name: string; avatar_url?: string } | null; 
 };
 
 type Transaction = {
@@ -25,7 +25,7 @@ type Transaction = {
   user_id: string;
   profiles: { full_name: string } | null;
   split_type: string;
-  split_details: any; // JSON object
+  split_details: any;
 };
 
 export default function PotDetailScreen() {
@@ -39,16 +39,19 @@ export default function PotDetailScreen() {
   const [potData, setPotData] = useState<any>(null);
   const [myRole, setMyRole] = useState<string>('member'); 
 
-  // Modals
+  // Modal State
   const [modalVisible, setModalVisible] = useState(false);
-  const [balanceVisible, setBalanceVisible] = useState(false); // <--- NEW MODAL
+  const [balanceVisible, setBalanceVisible] = useState(false);
+  
+  // EDIT State
+  const [editingId, setEditingId] = useState<string | null>(null);
+
+  // Form State
   const [transType, setTransType] = useState<'deposit' | 'withdraw'>('deposit');
   const [amount, setAmount] = useState('');
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [processing, setProcessing] = useState(false);
-
-  // Split State
   const [selectedMembers, setSelectedMembers] = useState<string[]>([]); 
 
   async function fetchDetails() {
@@ -59,15 +62,15 @@ export default function PotDetailScreen() {
     const { data: pot } = await supabase.from('pots').select('*').eq('id', potId).single();
     if (pot) setPotData(pot);
 
-    // 2. Members & Roles
+    // 2. Members & Roles (NOW FETCHING AVATAR_URL)
     const { data: mems } = await supabase
       .from('pot_members')
-      .select('*, profiles(full_name)')
+      .select('*, profiles(full_name, avatar_url)') // <--- Added URL
       .eq('pot_id', potId);
       
     if (mems) {
         setMembers(mems as any);
-        setSelectedMembers(mems.map((m: any) => m.user_id));
+        if (selectedMembers.length === 0) setSelectedMembers(mems.map((m: any) => m.user_id));
         
         if (pot && pot.owner_id === user?.id) {
           setMyRole('owner');
@@ -92,6 +95,46 @@ export default function PotDetailScreen() {
 
   // --- ACTIONS ---
 
+  const handleInvite = () => {
+    const code = potData?.share_code || paramCode;
+    
+    Alert.alert(
+        "Invite Friend",
+        `Group Code: ${code}`,
+        [
+            { text: "Copy Code", onPress: async () => {
+                await Clipboard.setStringAsync(code);
+                Alert.alert("Copied!", "Code copied to clipboard.");
+            }},
+            { text: "Share Message", onPress: () => {
+                Share.share({ message: `Join my pot "${name}" on UpFront! Code: ${code}` });
+            }},
+            { text: "Cancel", style: "cancel" }
+        ]
+    );
+  };
+
+  const openModal = (type: 'deposit' | 'withdraw', transactionToEdit?: Transaction) => {
+    if (transactionToEdit) {
+        setEditingId(transactionToEdit.id);
+        setTransType(transactionToEdit.amount > 0 ? 'deposit' : 'withdraw');
+        setAmount(Math.abs(transactionToEdit.amount).toString());
+        setTitle(transactionToEdit.title);
+        setDescription(transactionToEdit.description || '');
+        if (transactionToEdit.split_details) {
+            setSelectedMembers(Object.keys(transactionToEdit.split_details));
+        }
+    } else {
+        setEditingId(null);
+        setTransType(type);
+        setAmount('');
+        setTitle('');
+        setDescription('');
+        if (members.length > 0) setSelectedMembers(members.map(m => m.user_id));
+    }
+    setModalVisible(true);
+  };
+
   const handleTransaction = async () => {
     const finalTitle = title || (transType === 'deposit' ? 'Deposit' : 'Expense');
     
@@ -113,21 +156,26 @@ export default function PotDetailScreen() {
         selectedMembers.forEach(uid => { splitData[uid] = splitAmount; });
     }
 
-    const { error } = await supabase.from('transactions').insert({
-      pot_id: potId,
-      user_id: user.id,
-      amount: finalAmount,
-      title: finalTitle,
-      description: description,
-      split_type: 'EQUAL',
-      split_details: splitData
-    });
+    const payload = {
+        amount: finalAmount,
+        title: finalTitle,
+        description: description,
+        split_type: 'EQUAL',
+        split_details: splitData
+    };
+
+    let error;
+
+    if (editingId) {
+        const { error: updateError } = await supabase.from('transactions').update(payload).eq('id', editingId);
+        error = updateError;
+    } else {
+        const { error: insertError } = await supabase.from('transactions').insert({ pot_id: potId, user_id: user.id, ...payload });
+        error = insertError;
+    }
 
     if (error) Alert.alert("Error", error.message);
     else {
-      setAmount('');
-      setTitle('');
-      setDescription('');
       setModalVisible(false);
       fetchDetails(); 
     }
@@ -135,10 +183,7 @@ export default function PotDetailScreen() {
   };
 
   const deleteTransaction = async (id: string) => {
-    if (myRole !== 'owner' && myRole !== 'admin') {
-        Alert.alert("Permission Denied", "Only the Pot Owner can delete transactions.");
-        return;
-    }
+    if (myRole !== 'owner' && myRole !== 'admin') return;
 
     Alert.alert("Delete?", "Remove this transaction?", [
         { text: "Cancel", style: "cancel" },
@@ -158,31 +203,13 @@ export default function PotDetailScreen() {
     }
   };
 
-  // --- CALCULATE BALANCES ---
   const calculateBalances = () => {
     const balances: Record<string, number> = {};
-    
-    // Initialize everyone at 0
     members.forEach(m => balances[m.user_id] = 0);
-
     transactions.forEach(t => {
-      // 1. Credit the payer (How much they put IN)
-      // Deposits are positive, Withdrawals are negative in the DB
-      // But for "Debt", if I pay for dinner (-50), I essentially "Paid 50".
-      // Wait, our DB stores expense as -50.
-      
-      // LOGIC:
-      // If Amount > 0 (Deposit): Just adds to pot. Doesn't affect debt.
-      // If Amount < 0 (Expense):
-      //    Payer gets +50 credit (They paid).
-      //    Split people get -Amount debt.
-
       if (t.amount < 0) {
          const cost = Math.abs(t.amount);
-         // Credit the person who paid
          if (balances[t.user_id] !== undefined) balances[t.user_id] += cost;
-
-         // Debit the people involved
          if (t.split_details) {
             Object.entries(t.split_details).forEach(([uid, share]) => {
                 if (balances[uid] !== undefined) balances[uid] -= (share as number);
@@ -190,39 +217,20 @@ export default function PotDetailScreen() {
          }
       }
     });
-
     return balances;
   };
-
   const memberBalances = calculateBalances();
 
-  // --- UI HELPERS ---
   const getProgress = () => {
     if (!potData || potData.target_amount === 0) return 0;
     const percent = (potData.current_amount / potData.target_amount) * 100;
     return Math.max(0, Math.min(100, percent));
   };
-
-  const openModal = (type: 'deposit' | 'withdraw') => {
-    setTransType(type);
-    setModalVisible(true);
-    if (members.length > 0) setSelectedMembers(members.map(m => m.user_id));
-  };
-
   const getSplitText = () => {
     if (!amount || selectedMembers.length === 0) return "£0.00 each";
     const val = parseFloat(amount);
     const perPerson = val / selectedMembers.length;
     return `£${perPerson.toFixed(2)} per person`;
-  };
-
-  const copyToClipboard = async () => {
-    await Clipboard.setStringAsync(potData?.share_code || paramCode);
-    Alert.alert("Copied!", "Send this code to your friend.");
-  };
-
-  const shareMessage = async () => {
-    Share.share({ message: `Join my pot "${name}" on UpFront! The code is: ${potData?.share_code || paramCode}` });
   };
 
   const canEdit = myRole === 'owner' || myRole === 'admin';
@@ -234,8 +242,6 @@ export default function PotDetailScreen() {
             <Ionicons name="arrow-back" size={24} color="#fff" />
         </TouchableOpacity>
         <Text style={styles.title}>{name}</Text>
-        
-        {/* NEW: BALANCES BUTTON */}
         <TouchableOpacity style={styles.backBtn} onPress={() => setBalanceVisible(true)}>
             <Ionicons name="stats-chart" size={24} color="#3b82f6" />
         </TouchableOpacity>
@@ -248,6 +254,32 @@ export default function PotDetailScreen() {
           keyExtractor={(item) => item.id}
           ListHeaderComponent={
             <>
+              {/* --- POP CIRCLES MEMBERS --- */}
+              <View style={styles.membersContainer}>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{gap: 15, paddingHorizontal: 10}}>
+                    {members.map(member => (
+                        <View key={member.id} style={styles.popCircleContainer}>
+                            <View style={styles.popCircle}>
+                                {member.profiles?.avatar_url ? (
+                                    <Image source={{ uri: member.profiles.avatar_url }} style={{ width: '100%', height: '100%', borderRadius: 25 }} />
+                                ) : (
+                                    <Text style={styles.popInitials}>{member.profiles?.full_name ? member.profiles.full_name[0] : '?'}</Text>
+                                )}
+                            </View>
+                            <Text style={styles.popName} numberOfLines={1}>
+                                {member.profiles?.full_name?.split(' ')[0] || 'User'}
+                            </Text>
+                        </View>
+                    ))}
+                    <TouchableOpacity onPress={handleInvite} style={styles.popCircleContainer}>
+                        <View style={[styles.popCircle, {backgroundColor:'#222', borderWidth:1, borderColor:'#444'}]}>
+                             <Ionicons name="add" size={24} color="#fff" />
+                        </View>
+                        <Text style={styles.popName}>Invite</Text>
+                    </TouchableOpacity>
+                </ScrollView>
+              </View>
+
               <View style={styles.amountCard}>
                   <Text style={styles.currencyLabel}>Total Saved</Text>
                   <Text style={styles.bigAmount}>
@@ -277,23 +309,18 @@ export default function PotDetailScreen() {
                   )}
               </View>
 
-              <View style={styles.shareBanner}>
-                  <TouchableOpacity onPress={copyToClipboard} style={styles.shareTextContainer}>
-                      <Text style={styles.shareLabel}>INVITE CODE</Text>
-                      <Text style={styles.shareCode}>{potData?.share_code || paramCode}</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity onPress={shareMessage} style={styles.shareIconBtn}>
-                      <Ionicons name="share-outline" size={24} color="#fff" />
-                  </TouchableOpacity>
-              </View>
-
               <Text style={styles.sectionTitle}>Recent Activity</Text>
             </>
           }
           renderItem={({ item }) => {
             const isDeposit = item.amount > 0;
             return (
-              <TouchableOpacity onLongPress={() => deleteTransaction(item.id)} activeOpacity={0.7} style={styles.transactionRow}>
+              <TouchableOpacity 
+                onPress={() => canEdit && openModal(isDeposit ? 'deposit' : 'withdraw', item)} 
+                onLongPress={() => deleteTransaction(item.id)} 
+                activeOpacity={0.7} 
+                style={styles.transactionRow}
+              >
                 <View style={[styles.transIcon, { backgroundColor: isDeposit ? 'rgba(34, 197, 94, 0.1)' : 'rgba(239, 68, 68, 0.1)' }]}>
                   <Ionicons name={isDeposit ? "arrow-up" : "arrow-down"} size={18} color={isDeposit ? "#22c55e" : "#ef4444"} />
                 </View>
@@ -303,9 +330,12 @@ export default function PotDetailScreen() {
                     {item.profiles?.full_name || 'User'} • {item.description || new Date(item.created_at).toLocaleDateString()}
                   </Text>
                 </View>
-                <Text style={[styles.transAmount, { color: isDeposit ? '#22c55e' : '#ef4444' }]}>
-                  {isDeposit ? '+' : ''}£{item.amount.toFixed(2)}
-                </Text>
+                <View style={{alignItems:'flex-end'}}>
+                    <Text style={[styles.transAmount, { color: isDeposit ? '#22c55e' : '#ef4444' }]}>
+                    {isDeposit ? '+' : ''}£{Math.abs(item.amount).toFixed(2)}
+                    </Text>
+                    {canEdit && <Text style={{fontSize:10, color:'#444'}}>Edit</Text>}
+                </View>
               </TouchableOpacity>
             );
           }}
@@ -313,16 +343,14 @@ export default function PotDetailScreen() {
         />
       )}
 
-      {/* --- ADD FUNDS/SPEND MODAL --- */}
+      {/* --- ADD/EDIT MODAL --- */}
       <Modal animationType="slide" transparent={true} visible={modalVisible} onRequestClose={() => setModalVisible(false)}>
           <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
             <View style={styles.modalOverlay}>
               <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalContent}>
-                
                 <Text style={styles.modalTitle}>
-                  {transType === 'deposit' ? 'Add Funds 💰' : 'Record Expense 💸'}
+                  {editingId ? 'Edit Transaction ✏️' : (transType === 'deposit' ? 'Add Funds 💰' : 'Record Expense 💸')}
                 </Text>
-                
                 <TextInput 
                   placeholder="£0.00" 
                   placeholderTextColor="#555" 
@@ -332,10 +360,9 @@ export default function PotDetailScreen() {
                   onChangeText={setAmount} 
                   autoFocus 
                 />
-
                 <View style={styles.detailsContainer}>
                     <TextInput 
-                        placeholder={transType === 'deposit' ? "Source (e.g. From Mom)" : "Merchant (e.g. Uber)"}
+                        placeholder={transType === 'deposit' ? "Source" : "Merchant"}
                         placeholderTextColor="#666" 
                         style={styles.detailInput} 
                         value={title} 
@@ -343,14 +370,13 @@ export default function PotDetailScreen() {
                     />
                     <View style={styles.divider} />
                     <TextInput 
-                        placeholder="Notes (Optional)" 
+                        placeholder="Notes" 
                         placeholderTextColor="#666" 
                         style={styles.detailInput} 
                         value={description} 
                         onChangeText={setDescription} 
                     />
                 </View>
-
                 {transType === 'withdraw' && (
                     <View style={styles.splitSection}>
                         <Text style={styles.splitHeader}>Split with:</Text>
@@ -373,72 +399,69 @@ export default function PotDetailScreen() {
                         <Text style={styles.splitMath}>{getSplitText()}</Text>
                     </View>
                 )}
-
                 <View style={styles.modalButtons}>
                   <TouchableOpacity onPress={() => setModalVisible(false)} style={styles.cancelBtn}>
                     <Text style={{ color: '#888' }}>Cancel</Text>
                   </TouchableOpacity>
                   <TouchableOpacity onPress={handleTransaction} style={[styles.confirmBtn, { backgroundColor: transType === 'deposit' ? '#22c55e' : '#ef4444' }]} disabled={processing}>
-                    {processing ? <ActivityIndicator color="#000" /> : <Text style={styles.confirmBtnText}>Confirm</Text>}
+                    {processing ? <ActivityIndicator color="#000" /> : <Text style={styles.confirmBtnText}>{editingId ? 'Save' : 'Confirm'}</Text>}
                   </TouchableOpacity>
                 </View>
-
               </KeyboardAvoidingView>
             </View>
           </TouchableWithoutFeedback>
       </Modal>
 
-      {/* --- NEW: BALANCES MODAL --- */}
+      {/* --- BALANCES MODAL --- */}
       <Modal animationType="fade" transparent={true} visible={balanceVisible} onRequestClose={() => setBalanceVisible(false)}>
         <View style={styles.modalOverlay}>
             <View style={styles.modalContent}>
                 <Text style={styles.modalTitle}>Group Balances</Text>
                 <Text style={{color:'#666', textAlign:'center', marginBottom:20}}>Who owes what?</Text>
-                
                 {members.map(member => {
                     const bal = memberBalances[member.user_id] || 0;
                     const isOwed = bal > 0;
                     const isNeutral = bal === 0;
-                    
                     return (
                         <View key={member.id} style={styles.balanceRow}>
                              <View style={styles.avatar}>
-                                <Text style={{color:'#fff', fontWeight:'bold'}}>
-                                  {member.profiles?.full_name ? member.profiles.full_name[0] : '?'}
-                                </Text>
+                                {member.profiles?.avatar_url ? (
+                                    <Image source={{ uri: member.profiles.avatar_url }} style={{ width: '100%', height: '100%', borderRadius: 16 }} />
+                                ) : (
+                                    <Text style={{color:'#fff', fontWeight:'bold'}}>{member.profiles?.full_name ? member.profiles.full_name[0] : '?'}</Text>
+                                )}
                             </View>
                             <Text style={styles.balanceName}>{member.profiles?.full_name || 'User'}</Text>
-                            
                             <View style={{alignItems:'flex-end'}}>
                                 <Text style={[styles.balanceAmount, { color: isOwed ? '#22c55e' : (isNeutral ? '#888' : '#ef4444') }]}>
                                     {isOwed ? '+' : ''}£{bal.toFixed(2)}
                                 </Text>
-                                <Text style={styles.balanceSub}>
-                                    {isOwed ? 'gets back' : (isNeutral ? 'settled' : 'owes')}
-                                </Text>
+                                <Text style={styles.balanceSub}>{isOwed ? 'gets back' : (isNeutral ? 'settled' : 'owes')}</Text>
                             </View>
                         </View>
                     )
                 })}
-
                 <TouchableOpacity onPress={() => setBalanceVisible(false)} style={[styles.confirmBtn, {backgroundColor:'#333', marginTop:20}]}>
                     <Text style={styles.confirmBtnText}>Close</Text>
                 </TouchableOpacity>
             </View>
         </View>
       </Modal>
-
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#000', paddingTop: 60 },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, marginBottom: 20 },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 20, marginBottom: 10 },
   backBtn: { padding: 8, backgroundColor: '#111', borderRadius: 20 },
   title: { color: '#fff', fontSize: 20, fontWeight: 'bold' },
   content: { padding: 20, paddingBottom: 50 },
-  
+  membersContainer: { marginBottom: 20 },
+  popCircleContainer: { alignItems: 'center', width: 60 },
+  popCircle: { width: 50, height: 50, borderRadius: 25, backgroundColor: '#333', justifyContent: 'center', alignItems: 'center', marginBottom: 4, borderWidth: 2, borderColor: '#000', overflow:'hidden' },
+  popInitials: { color: '#fff', fontSize: 18, fontWeight: 'bold' },
+  popName: { color: '#888', fontSize: 10, fontWeight: '600' },
   amountCard: { backgroundColor: '#111', padding: 24, borderRadius: 24, alignItems: 'center', marginBottom: 20, borderWidth: 1, borderColor: '#222' },
   currencyLabel: { color: '#666', fontSize: 14, textTransform: 'uppercase', marginBottom: 8 },
   bigAmount: { color: '#fff', fontSize: 48, fontWeight: '900' },
@@ -448,29 +471,19 @@ const styles = StyleSheet.create({
   actionBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', padding: 16, borderRadius: 16, gap: 8 },
   btnText: { color: '#000', fontWeight: 'bold', fontSize: 16 },
   readOnlyBadge: { flexDirection:'row', alignItems:'center', gap:6, backgroundColor:'#222', paddingVertical:8, paddingHorizontal:16, borderRadius:20 },
-
-  shareBanner: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#112240', borderRadius: 12, marginBottom: 30, borderWidth: 1, borderColor: '#1e3a8a', overflow:'hidden', height: 80 },
-  shareTextContainer: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  shareLabel: { color: '#60a5fa', fontSize: 10, fontWeight: '700', letterSpacing: 1, marginBottom: 4 },
-  shareCode: { color: '#fff', fontWeight: 'bold', fontSize: 24, letterSpacing: 4 },
-  shareIconBtn: { backgroundColor: '#3b82f6', width: 60, height: '100%', justifyContent: 'center', alignItems: 'center' },
-
   sectionTitle: { color: '#fff', fontSize: 18, fontWeight: 'bold', marginBottom: 16 },
   transactionRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#111', padding: 16, borderRadius: 16, marginBottom: 10, borderWidth: 1, borderColor: '#222' },
   transIcon: { width: 36, height: 36, borderRadius: 18, justifyContent: 'center', alignItems: 'center', marginRight: 12 },
   transName: { color: '#fff', fontWeight: 'bold', fontSize: 16 },
   transSub: { color: '#666', fontSize: 12, marginTop: 2 },
   transAmount: { fontWeight: 'bold', fontSize: 16 },
-
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.9)', justifyContent: 'flex-end' },
   modalContent: { backgroundColor: '#1a1a1a', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 24, paddingBottom: 40 },
   modalTitle: { color: '#fff', fontSize: 20, fontWeight: 'bold', marginBottom: 20, textAlign: 'center' },
   amountInput: { fontSize: 42, fontWeight: 'bold', color: '#fff', textAlign: 'center', marginBottom: 20 },
-  
   detailsContainer: { backgroundColor: '#222', borderRadius: 12, overflow: 'hidden', marginBottom: 20 },
   detailInput: { padding: 16, color: '#fff', fontSize: 16 },
   divider: { height: 1, backgroundColor: '#333' },
-
   splitSection: { marginBottom: 20 },
   splitHeader: { color: '#888', marginBottom: 10, fontSize: 14 },
   memberChip: { paddingVertical: 8, paddingHorizontal: 16, borderRadius: 20, backgroundColor: '#333', marginRight: 8 },
@@ -478,13 +491,10 @@ const styles = StyleSheet.create({
   memberChipText: { color: '#888', fontWeight: '600' },
   memberChipTextActive: { color: '#fff' },
   splitMath: { color: '#22c55e', marginTop: 10, fontWeight: 'bold', textAlign: 'center' },
-
   modalButtons: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   cancelBtn: { padding: 16 },
   confirmBtn: { paddingVertical: 14, paddingHorizontal: 32, borderRadius: 12 },
   confirmBtnText: { color: '#000', fontWeight: 'bold', fontSize: 16 },
-  
-  // Balance Row Styles
   balanceRow: { flexDirection:'row', alignItems:'center', paddingVertical:12, borderBottomWidth:1, borderBottomColor:'#222' },
   avatar: { width: 32, height: 32, borderRadius: 16, backgroundColor: '#333', justifyContent: 'center', alignItems: 'center', marginRight: 12 },
   balanceName: { flex:1, color:'#fff', fontSize:16, fontWeight:'bold' },

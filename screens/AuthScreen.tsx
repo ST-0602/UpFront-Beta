@@ -4,14 +4,16 @@ import {
   KeyboardAvoidingView, Platform, ActivityIndicator, Alert, 
   Keyboard, TouchableWithoutFeedback 
 } from 'react-native';
-import { supabase } from './lib/supabase'; 
+// ✅ FIX 1: Correct Path (../)
+import { supabase } from '../lib/supabase'; 
 import Animated, { FadeInDown, Layout, SlideInDown, useAnimatedStyle, withSpring } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
 import { LinearGradient } from 'expo-linear-gradient';
 import { FontAwesome } from '@expo/vector-icons'; 
-import * as Linking from 'expo-linking'; // Catches the callback
+import * as Linking from 'expo-linking'; 
 
-export function AuthScreen() {
+// ✅ FIX 2: Export Default (Fixes the "Undefined Component" crash)
+export default function AuthScreen() {
   const [isLogin, setIsLogin] = useState(true);
   const [loading, setLoading] = useState(false);
   const [email, setEmail] = useState('');
@@ -19,13 +21,11 @@ export function AuthScreen() {
   const [fullName, setFullName] = useState('');
   const [strength, setStrength] = useState(0);
 
-  // --- DEEP LINK HANDLER (The "Catcher") ---
+  // --- DEEP LINK HANDLER ---
   useEffect(() => {
     const handleDeepLink = async (url: string) => {
-      // Check if the URL is for us and has tokens
       if (url && (url.includes('access_token') || url.includes('refresh_token'))) {
         try {
-          // Extract tokens from the URL fragment (#...)
           const paramsString = url.split('#')[1]; 
           const params = new URLSearchParams(paramsString);
           const access_token = params.get('access_token');
@@ -35,7 +35,6 @@ export function AuthScreen() {
             setLoading(true);
             const { error } = await supabase.auth.setSession({ access_token, refresh_token });
             if (error) throw error;
-            // Success: AuthProvider will detect session and redirect to Home
           }
         } catch (e: any) {
           Alert.alert('Login Error', e.message);
@@ -45,10 +44,7 @@ export function AuthScreen() {
       }
     };
 
-    // Listen for links while app is open
     const subscription = Linking.addEventListener('url', ({ url }) => handleDeepLink(url));
-    
-    // Check if app was opened from a closed state
     Linking.getInitialURL().then((url) => {
       if (url) handleDeepLink(url);
     });
@@ -56,24 +52,22 @@ export function AuthScreen() {
     return () => subscription.remove();
   }, []);
 
-  // --- GOOGLE LOGIN (The "launcher") ---
+  // --- GOOGLE LOGIN ---
   const handleGooglePress = async () => {
     try {
       setLoading(true);
       await Haptics.selectionAsync();
 
-      // 1. Ask Supabase to start the flow
       const { data, error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
-          redirectTo: 'upfront://', // Supabase will send the user back here
-          skipBrowserRedirect: true, // We handle the URL manually to be safe
+          redirectTo: 'upfront://',
+          skipBrowserRedirect: true,
         },
       });
 
       if (error) throw error;
 
-      // 2. Open the URL Supabase gave us (This opens Google)
       if (data?.url) {
         await Linking.openURL(data.url); 
       }
@@ -84,7 +78,7 @@ export function AuthScreen() {
     }
   };
 
-  // --- STANDARD EMAIL LOGIN ---
+  // --- STANDARD LOGIN ---
   async function handleAuth() {
     setLoading(true);
     await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
@@ -107,7 +101,7 @@ export function AuthScreen() {
     setLoading(false);
   }
 
-  // Password Strength Logic
+  // Password Strength
   useEffect(() => {
     let score = 0;
     if (password.length > 0) {
@@ -157,13 +151,11 @@ export function AuthScreen() {
                 {loading ? <ActivityIndicator color="#000" /> : <Text style={styles.btnText}>{isLogin ? 'Sign In' : 'Create Account'}</Text>}
               </TouchableOpacity>
 
-              {/* --- 👇 PASTE THIS STARTING HERE 👇 --- */}
-              
+              {/* DEV LOGIN BUTTON */}
               <TouchableOpacity 
                 style={[styles.btn, { backgroundColor: '#222', marginTop: 10, borderColor: '#333', borderWidth: 1 }]} 
                 onPress={async () => {
                   setLoading(true);
-                  // ⚠️ REPLACE WITH THE EMAIL/PASSWORD YOU JUST CREATED
                   const { error } = await supabase.auth.signInWithPassword({ 
                     email: "sakshamt@rocketmail.com", 
                     password: "Gumtree@101" 
@@ -174,8 +166,6 @@ export function AuthScreen() {
               >
                 <Text style={[styles.btnText, { color: '#888' }]}>⚡️ DEV QUICK LOGIN</Text>
               </TouchableOpacity>
-
-              {/* --- 👆 END OF PASTE 👆 --- */}
 
               <View style={styles.socialRow}>
                 <TouchableOpacity style={styles.socialBtn} onPress={handleGooglePress}>

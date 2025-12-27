@@ -1,49 +1,55 @@
-import React from 'react';
-import { View, ActivityIndicator } from 'react-native';
+import React, { useEffect, useState } from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { AuthProvider, useAuth } from './contexts/AuthProvider';
-import { AuthScreen } from './AuthScreen';
+import { supabase } from './lib/supabase';
+import { Session } from '@supabase/supabase-js';
+import { View, ActivityIndicator } from 'react-native';
+// Polyfill for Supabase Image Uploads
+import { decode } from 'base-64';
+if(typeof atob === 'undefined') { global.atob = decode; }
 
-// 👇 IMPORT THE SCREENS WE MOVED
-import HomeScreen from './screens/HomeScreen.tsx';      
-import PotDetailScreen from './screens/PotDetailScreen.tsx';
+import AuthScreen from './screens/AuthScreen';
+import HomeScreen from './screens/HomeScreen';
+import PotDetailScreen from './screens/PotDetailScreen';
+import ProfileScreen from './screens/ProfileScreen'; // <--- Import New Screen
 
 const Stack = createNativeStackNavigator();
 
-// 1. The "App" Stack (Only for logged-in users)
-const AppStack = () => {
-  return (
-    <Stack.Navigator screenOptions={{ headerShown: false, contentStyle: { backgroundColor: '#000' } }}>
-      <Stack.Screen name="Home" component={HomeScreen} />
-      <Stack.Screen name="PotDetail" component={PotDetailScreen} />
-    </Stack.Navigator>
-  );
-};
+export default function App() {
+  const [session, setSession] = useState<Session | null>(null);
+  const [loading, setLoading] = useState(true);
 
-// 2. The Traffic Controller
-const Navigation = () => {
-  const { session, loading } = useAuth();
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      setLoading(false);
+    });
+
+    supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+    });
+  }, []);
+
+console.log("Debug AuthScreen:", AuthScreen); 
+// If this prints "undefined", the export in Step 1 didn't save correctly.
 
   if (loading) {
-    return (
-      <View style={{flex:1, backgroundColor:'#000', justifyContent:'center', alignItems:'center'}}>
-        <ActivityIndicator size="large" color="#3b82f6"/>
-      </View>
-    );
+    return <View style={{flex:1, backgroundColor:'#000', justifyContent:'center'}}><ActivityIndicator color="#3b82f6"/></View>;
   }
-  
+
   return (
     <NavigationContainer>
-      {!session ? <AuthScreen /> : <AppStack />}
+      <Stack.Navigator screenOptions={{ headerShown: false, contentStyle: { backgroundColor: '#000' } }}>
+        {session && session.user ? (
+          <>
+            <Stack.Screen name="Home" component={HomeScreen} />
+            <Stack.Screen name="PotDetail" component={PotDetailScreen} />
+            <Stack.Screen name="Profile" component={ProfileScreen} /> 
+          </>
+        ) : (
+          <Stack.Screen name="Auth" component={AuthScreen} />
+        )}
+      </Stack.Navigator>
     </NavigationContainer>
-  );
-};
-
-export default function App() {
-  return (
-    <AuthProvider>
-      <Navigation />
-    </AuthProvider>
   );
 }
